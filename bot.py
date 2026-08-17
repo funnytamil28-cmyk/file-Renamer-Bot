@@ -16,7 +16,6 @@ app = Client(
 USER_DATA = {}
 
 
-# --- Helper Functions for Progress Bar ---
 def humanbytes(size):
   if not size:
     return "0 B"
@@ -45,7 +44,9 @@ async def progress_func(current, total, ud_type, message, start_time):
   if round(diff % 3.0) == 0 or current == total:
     percentage = current * 100 / total
     speed = current / diff
-    time_to_completion = round((total - current) / speed) * 1000
+    time_to_completion = (
+        round((total - current) / speed) * 1000 if speed > 0 else 0
+    )
 
     progress = "[{0}{1}]".format(
         "".join(["█" for _ in range(int(percentage / 10))]),
@@ -65,7 +66,7 @@ async def progress_func(current, total, ud_type, message, start_time):
       pass
 
 
-# --- Probe File Streams ---
+# Timeout added to prevent freeze on probe
 async def get_file_streams(file_path):
   cmd = [
       "ffprobe",
@@ -76,27 +77,27 @@ async def get_file_streams(file_path):
       "-show_streams",
       file_path,
   ]
-  process = await asyncio.create_subprocess_exec(
-      *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
-  )
-  stdout, _ = await process.communicate()
   try:
-    data = json.loads(stdout.decode())
+    process = await asyncio.create_subprocess_exec(
+        *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+    )
+    stdout, _ = await asyncio.wait_for(process.communicate(), timeout=15)
+    data = json.loads(stdout.decode("utf-8", errors="ignore"))
     return data.get("streams", [])
-  except Exception:
+  except Exception as e:
+    print(f"FFprobe Error: {e}")
     return []
 
 
-# --- Start Command ---
 @app.on_message(filters.command("start"))
 async def start_handler(client, message):
   await message.reply_text(
       f"👋 **Vanakkam {message.from_user.first_name}!**\n\n"
-      "Enakku edhavadhu Video/Document file anuppunga. Stream removal, custom thumbnail, and metadata auto-apply aagum!"
+      "Enakku edhavadhu Video/Document file anuppunga. Stream removal, custom"
+      " thumbnail, and metadata auto-apply aagum!"
   )
 
 
-# --- Set Custom Thumbnail Command ---
 @app.on_message(filters.command("thumb") | (filters.private & filters.photo))
 async def save_thumb(client, message):
   user_id = message.from_user.id
@@ -109,13 +110,10 @@ async def save_thumb(client, message):
     await message.reply_text("📷 Photo reply/send panni thumbnail save panna.")
 
 
-# --- Media Receiver Handler ---
 @app.on_message(filters.private & (filters.document | filters.video))
 async def media_handler(client, message):
   user_id = message.from_user.id
-  status_msg = await message.reply_text(
-      "📥 **Downloading File to Analyze Streams...**"
-  )
+  status_msg = await message.reply_text("📥 **Downloading File...**")
 
   start_time = time.time()
   file_path = await client.download_media(
@@ -123,6 +121,8 @@ async def media_handler(client, message):
       progress=progress_func,
       progress_args=("📥 **Downloading File...**", status_msg, start_time),
   )
+
+  await status_msg.edit_text("🔍 **Analyzing Video Streams...**")
 
   file_name = (
       message.document.file_name if message.document else message.video.file_name
@@ -145,9 +145,7 @@ async def media_handler(client, message):
 
   buttons = InlineKeyboardMarkup([
       [
-          InlineKeyboardButton(
-              "🎵 Audio Streams", callback_data="view_audio"
-          ),
+          InlineKeyboardButton("🎵 Audio Streams", callback_data="view_audio"),
           InlineKeyboardButton("💬 Subtitle Streams", callback_data="view_sub"),
       ],
       [
@@ -159,13 +157,14 @@ async def media_handler(client, message):
 
   await status_msg.edit_text(
       f"📂 **File Received:** `{file_name}`\n\n"
-      f"🎵 **Audio Tracks:** `{len(audio_tracks)}` | 💬 **Subtitles:** `{len(sub_tracks)}`\n\n"
-      "Keazhe irukura options click panni remove panna vendiya streams select pannunga:",
+      f"🎵 **Audio Tracks:** `{len(audio_tracks)}` | 💬 **Subtitles:**"
+      f" `{len(sub_tracks)}`\n\n"
+      "Keazhe irukura options click panni remove panna vendiya streams select"
+      " pannunga:",
       reply_markup=buttons,
   )
 
 
-# --- Callback Query Handler ---
 @app.on_callback_query()
 async def callback_handler(client, callback):
   user_id = callback.from_user.id
@@ -289,7 +288,6 @@ async def callback_handler(client, callback):
     await start_ffmpeg_process(client, callback.message, user_id)
 
 
-# --- FFmpeg Exec & File Upload Function ---
 async def start_ffmpeg_process(client, status_msg, user_id):
   udata = USER_DATA[user_id]
   in_file = udata["file_path"]
@@ -320,19 +318,19 @@ async def start_ffmpeg_process(client, status_msg, user_id):
       chat_id=status_msg.chat.id,
       document=out_file,
       thumb=thumb,
-      caption=f"✅ **Processed File:** `{udata['new_name']}`\n🏷️ **Title:** `{udata['custom_metadata']}`",
+      caption=(
+          f"✅ **Processed File:** `{udata['new_name']}`\n🏷️ **Title:**"
+          f" `{udata['custom_metadata']}`"
+      ),
       progress=progress_func,
       progress_args=("📤 **Uploading File...**", status_msg, start_time),
   )
 
   await status_msg.delete()
 
-  # Clean Up Storage
   for p in [in_file, out_file]:
     if os.path.exists(p):
       os.remove(p)
 
 
 app.run()
-    
-  
